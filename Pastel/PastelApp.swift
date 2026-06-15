@@ -407,6 +407,7 @@ struct RunConfig {
     var validateLogin: Bool = false
     var appIsFree: String = ""
     var appCountry: String = "us"
+    var removeAppStoreUpdateMetadata: Bool = false
 }
 
 struct WindowChromeConfigurator: NSViewRepresentable {
@@ -841,6 +842,7 @@ final class DownloadManager: ObservableObject {
         if config.validateLogin { env["IPA_VALIDATE_LOGIN"] = "1" }
         if !config.appIsFree.isEmpty { env["IPA_APP_IS_FREE"] = config.appIsFree }
         env["IPA_APP_COUNTRY"] = config.appCountry
+        if config.removeAppStoreUpdateMetadata { env["IPA_REMOVE_APP_STORE_UPDATE_METADATA"] = "1" }
         if let sessionURL = Self.sessionDirectoryURL() { env["IPA_SESSION_DIR"] = sessionURL.path }
         task.environment = env
 
@@ -1016,6 +1018,7 @@ struct DownloadedItem: Identifiable, Hashable {
     let appleAccount: String
     let storefrontId: String
     let downloadDate: Date
+    let removesAppStoreUpdates: Bool
 
     var sizeText: String {
         guard sizeBytes > 0 else { return "—" }
@@ -1041,6 +1044,23 @@ struct DownloadedAppGroup: Identifiable {
     var appId: String { items.first?.appId ?? "" }
     var storefrontId: String { items.first?.storefrontId ?? "" }
     var iconPath: String { items.first?.id ?? "" }
+}
+
+private enum IPADownloadVariant: String {
+    case original
+    case noUpdates
+
+    init(removeAppStoreUpdateMetadata: Bool) {
+        self = removeAppStoreUpdateMetadata ? .noUpdates : .original
+    }
+
+    var removesAppStoreUpdates: Bool {
+        self == .noUpdates
+    }
+}
+
+private func downloadedFileKey(_ value: String, variant: IPADownloadVariant) -> String {
+    "\(variant.rawValue)|\(value)"
 }
 
 func countryFlagEmoji(_ code: String) -> String {
@@ -1398,6 +1418,7 @@ struct ContentView: View {
     @State private var remoteAppIcons: [String: NSImage] = [:]
     @State private var downloadedVersionIDs: [String: URL] = [:]
     @State private var downloadedItems: [DownloadedItem] = []
+    @State private var noUpdateSelections: [String: Bool] = [:]
     @State private var selectedDownloadedItemID: String?
     @State private var selectedDownloadedGroupID: String?
     @State private var downloadSearchQuery = ""
@@ -1428,6 +1449,19 @@ struct ContentView: View {
     private var activeLog: String { downloads.focusJob?.log ?? "" }
     private var activeStatus: String { downloads.anyRunning ? String(localized: "运行中") : (downloads.focusJob?.status.displayName ?? String(localized: "就绪")) }
     private func versionIsRunning(_ id: String?) -> Bool { id.map { downloads.isRunning($0) } ?? false }
+    private func noUpdateEnabled(for record: VersionRecord) -> Bool {
+        noUpdateSelections[record.versionId.isEmpty ? record.id : record.versionId] ?? false
+    }
+    private func setNoUpdateEnabled(_ enabled: Bool, for record: VersionRecord) {
+        noUpdateSelections[record.versionId.isEmpty ? record.id : record.versionId] = enabled
+    }
+    private func downloadJobID(for record: VersionRecord, removesAppStoreUpdates: Bool) -> String {
+        "\(record.id)-\(IPADownloadVariant(removeAppStoreUpdateMetadata: removesAppStoreUpdates).rawValue)"
+    }
+    private func selectedDownloadJobID() -> String? {
+        guard let selectedVersion else { return nil }
+        return downloadJobID(for: selectedVersion, removesAppStoreUpdates: noUpdateEnabled(for: selectedVersion))
+    }
 
     var body: some View {
         mainWorkspace
@@ -2025,31 +2059,38 @@ struct ContentView: View {
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 4) {
                                 ForEach(Array(catalog.versionResults.enumerated()), id: \.element.id) { index, record in
+                                    let removesUpdates = noUpdateEnabled(for: record)
+                                    let jobID = downloadJobID(for: record, removesAppStoreUpdates: removesUpdates)
+                                    let downloadedURL = downloadedFileFor(record, removesAppStoreUpdates: removesUpdates)
                                     VersionSelectionRow(
                                         record: record,
                                         rowIndex: index,
                                         isSelected: selectedVersion?.id == record.id,
-                                        isDownloading: downloads.isRunning(record.id),
-                                        downloadProgress: downloads.job(record.id)?.progress,
-                                        isPackaging: downloads.job(record.id)?.isPackaging ?? false,
-                                        hasError: downloads.job(record.id)?.status == .failed,
-                                        errorLog: downloads.job(record.id)?.log ?? "",
-                                        downloadedURL: downloadedFileFor(record),
-                                        appIcon: downloadedFileFor(record).flatMap { versionIcons[$0.path] },
+                                        removesAppStoreUpdates: removesUpdates,
+                                        isDownloading: downloads.isRunning(jobID),
+                                        downloadProgress: downloads.job(jobID)?.progress,
+                                        isPackaging: downloads.job(jobID)?.isPackaging ?? false,
+                                        hasError: downloads.job(jobID)?.status == .failed,
+                                        errorLog: downloads.job(jobID)?.log ?? "",
+                                        downloadedURL: downloadedURL,
+                                        appIcon: downloadedURL.flatMap { versionIcons[$0.path] },
                                         onSelect: {
                                             selectVersion(record)
+                                        },
+                                        onToggleNoUpdate: { enabled in
+                                            setNoUpdateEnabled(enabled, for: record)
                                         },
                                         onDownload: {
                                             downloadVersion(record)
                                         },
                                         onReveal: {
-                                            if let url = downloadedFileFor(record) { revealInFinder(url) }
+                                            if let url = downloadedFileFor(record, removesAppStoreUpdates: noUpdateEnabled(for: record)) { revealInFinder(url) }
                                         },
                                         onAirDrop: {
-                                            if let url = downloadedFileFor(record) { airDrop(url) }
+                                            if let url = downloadedFileFor(record, removesAppStoreUpdates: noUpdateEnabled(for: record)) { airDrop(url) }
                                         },
                                         onDelete: {
-                                            if let url = downloadedFileFor(record) { deleteDownloaded(url) }
+                                            if let url = downloadedFileFor(record, removesAppStoreUpdates: noUpdateEnabled(for: record)) { deleteDownloaded(url) }
                                         }
                                     )
                                     .contextMenu {
@@ -2482,31 +2523,38 @@ struct ContentView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 8) {
                             ForEach(Array(catalog.versionResults.enumerated()), id: \.element.id) { index, record in
+                                let removesUpdates = noUpdateEnabled(for: record)
+                                let jobID = downloadJobID(for: record, removesAppStoreUpdates: removesUpdates)
+                                let downloadedURL = downloadedFileFor(record, removesAppStoreUpdates: removesUpdates)
                                 VersionSelectionRow(
                                     record: record,
                                     rowIndex: index,
                                     isSelected: selectedVersion?.id == record.id,
-                                    isDownloading: downloads.isRunning(record.id),
-                                    downloadProgress: downloads.job(record.id)?.progress,
-                                    isPackaging: downloads.job(record.id)?.isPackaging ?? false,
-                                    hasError: downloads.job(record.id)?.status == .failed,
-                                    errorLog: downloads.job(record.id)?.log ?? "",
-                                    downloadedURL: downloadedFileFor(record),
-                                    appIcon: downloadedFileFor(record).flatMap { versionIcons[$0.path] },
+                                    removesAppStoreUpdates: removesUpdates,
+                                    isDownloading: downloads.isRunning(jobID),
+                                    downloadProgress: downloads.job(jobID)?.progress,
+                                    isPackaging: downloads.job(jobID)?.isPackaging ?? false,
+                                    hasError: downloads.job(jobID)?.status == .failed,
+                                    errorLog: downloads.job(jobID)?.log ?? "",
+                                    downloadedURL: downloadedURL,
+                                    appIcon: downloadedURL.flatMap { versionIcons[$0.path] },
                                     onSelect: {
                                         selectVersion(record)
+                                    },
+                                    onToggleNoUpdate: { enabled in
+                                        setNoUpdateEnabled(enabled, for: record)
                                     },
                                     onDownload: {
                                         downloadVersion(record)
                                     },
                                     onReveal: {
-                                        if let url = downloadedFileFor(record) { revealInFinder(url) }
+                                        if let url = downloadedFileFor(record, removesAppStoreUpdates: noUpdateEnabled(for: record)) { revealInFinder(url) }
                                     },
                                     onAirDrop: {
-                                        if let url = downloadedFileFor(record) { airDrop(url) }
+                                        if let url = downloadedFileFor(record, removesAppStoreUpdates: noUpdateEnabled(for: record)) { airDrop(url) }
                                     },
                                     onDelete: {
-                                        if let url = downloadedFileFor(record) { deleteDownloaded(url) }
+                                        if let url = downloadedFileFor(record, removesAppStoreUpdates: noUpdateEnabled(for: record)) { deleteDownloaded(url) }
                                     }
                                 )
                                 .contextMenu {
@@ -2780,10 +2828,12 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     Color.clear.frame(width: DownloadedVersionHistoryRow.iconColumnWidth, height: 1)
                     downloadedHeaderColumn(String(localized: "版本号"), width: columns.version)
+                    downloadedHeaderColumn(String(localized: "版本 ID"), width: columns.versionID)
                     downloadedHeaderColumn(String(localized: "大小"), width: columns.size)
                     downloadedHeaderColumn(String(localized: "地区"), width: columns.region)
                     downloadedHeaderColumn(String(localized: "Apple 账户"), width: columns.account)
-                    downloadedHeaderColumn(String(localized: "下载日期"), width: columns.date)
+                    Color.clear.frame(width: DownloadedVersionHistoryRow.accountToNoUpdatesGap, height: 1)
+                    downloadedHeaderColumn(String(localized: "不再更新"), width: columns.noUpdates)
                     Color.clear.frame(width: DownloadedVersionHistoryRow.actionGap, height: 1)
                     Color.clear.frame(width: DownloadedVersionHistoryRow.actionColumnWidth, height: 1)
                 }
@@ -2962,11 +3012,10 @@ struct ContentView: View {
                 }
                 HStack(spacing: 14) {
                     let region = appStoreRegion(item.storefrontId)
-                    metaLabel(text: "\(region.flag) \(region.name)")
+                    metaLabel(text: region.name)
                     if !item.appleAccount.isEmpty {
                         metaLabel(systemImage: "person.crop.circle", text: item.appleAccount)
                     }
-                    metaLabel(systemImage: "calendar", text: item.dateText)
                 }
             }
             Spacer(minLength: 8)
@@ -3166,7 +3215,7 @@ struct ContentView: View {
             }
             .controlSize(.large)
             .buttonStyle(.glassProminent)
-            .disabled(versionIsRunning(selectedVersion?.id) || activeAppID.isEmpty || selectedVersion == nil)
+            .disabled((selectedDownloadJobID().map { downloads.isRunning($0) } ?? false) || activeAppID.isEmpty || selectedVersion == nil)
         case .logs:
             Button {
                 downloads.clearFinished()
@@ -3350,6 +3399,9 @@ struct ContentView: View {
                     versionHeaderColumn(String(localized: "版本号"), width: columns.version)
                     versionHeaderColumn(String(localized: "版本 ID"), width: columns.versionID)
                     versionHeaderColumn(String(localized: "大小"), width: columns.size)
+                    Text(String(localized: "不再更新"))
+                        .lineLimit(1)
+                        .frame(width: columns.noUpdates, alignment: .center)
                     Color.clear
                         .frame(width: VersionSelectionRow.actionGap, height: 1)
                     Text("")
@@ -3627,6 +3679,27 @@ struct ContentView: View {
 
     private static let versionIDsFetchJobKey = "__ipa_versionids_fetch__"
 
+    private static func filenameVersionAndVariant(from stem: String) -> (name: String, version: String, variant: IPADownloadVariant) {
+        let suffix = "_no-update"
+        let variant: IPADownloadVariant
+        let baseStem: String
+        if stem.localizedCaseInsensitiveContains(suffix), stem.lowercased().hasSuffix(suffix) {
+            variant = .noUpdates
+            baseStem = String(stem.dropLast(suffix.count))
+        } else {
+            variant = .original
+            baseStem = stem
+        }
+
+        guard let underscore = baseStem.lastIndex(of: "_") else {
+            return (baseStem, "", variant)
+        }
+
+        let name = String(baseStem[..<underscore])
+        let version = String(baseStem[baseStem.index(after: underscore)...])
+        return (name, version, variant)
+    }
+
     private func fetchVersionIDsFromApple() {
         let account = accountStore.selectedAccount
         let acct = (account?.appleAccount ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3696,9 +3769,9 @@ struct ContentView: View {
         var map: [String: URL] = [:]
         for url in items where url.pathExtension.lowercased() == "ipa" {
             let stem = url.deletingPathExtension().lastPathComponent
-            if let underscore = stem.lastIndex(of: "_") {
-                let version = String(stem[stem.index(after: underscore)...])
-                if !version.isEmpty { map[version] = url }
+            let parsed = Self.filenameVersionAndVariant(from: stem)
+            if !parsed.version.isEmpty {
+                map[downloadedFileKey(parsed.version, variant: parsed.variant)] = url
             }
         }
         downloadedFiles = map
@@ -3748,18 +3821,17 @@ struct ContentView: View {
         let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         let date = (attrs?[.creationDate] as? Date) ?? (attrs?[.modificationDate] as? Date) ?? Date()
         let stem = url.deletingPathExtension().lastPathComponent
-        let filenameVersion: String = {
-            guard let underscore = stem.lastIndex(of: "_") else { return "" }
-            return String(stem[stem.index(after: underscore)...])
-        }()
+        let filenameInfo = filenameVersionAndVariant(from: stem)
 
-        guard let data = runUnzip(["-p", path, "iTunesMetadata.plist"]),
+        let metadataInfo = downloadedMetadata(fromIPA: path)
+        guard let data = metadataInfo.data,
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
         else {
-            let name = stem.contains("_") ? String(stem[..<stem.lastIndex(of: "_")!]) : stem
+            let name = filenameInfo.name.isEmpty ? stem : filenameInfo.name
             return DownloadedItem(id: path, fileURL: url, appName: name, developer: "", bundleId: "",
-                                  appId: "", groupKey: name, version: filenameVersion, versionId: "", sizeBytes: size,
-                                  appleAccount: "", storefrontId: "", downloadDate: date)
+                                  appId: "", groupKey: name, version: filenameInfo.version, versionId: "", sizeBytes: size,
+                                  appleAccount: "", storefrontId: "", downloadDate: date,
+                                  removesAppStoreUpdates: filenameInfo.variant.removesAppStoreUpdates)
         }
 
         func str(_ key: String) -> String {
@@ -3772,7 +3844,7 @@ struct ContentView: View {
         let itemId = str("itemId")
         let bundleId = str("softwareVersionBundleId")
         let groupKey = !itemId.isEmpty ? itemId : (!bundleId.isEmpty ? bundleId : appName)
-        let version = !str("bundleShortVersionString").isEmpty ? str("bundleShortVersionString") : filenameVersion
+        let version = !str("bundleShortVersionString").isEmpty ? str("bundleShortVersionString") : filenameInfo.version
 
         return DownloadedItem(
             id: path,
@@ -3787,7 +3859,8 @@ struct ContentView: View {
             sizeBytes: size,
             appleAccount: str("appleId"),
             storefrontId: str("s"),
-            downloadDate: date
+            downloadDate: date,
+            removesAppStoreUpdates: metadataInfo.removesAppStoreUpdates || filenameInfo.variant.removesAppStoreUpdates
         )
     }
 
@@ -3841,25 +3914,31 @@ struct ContentView: View {
         let path = ipaURL.path
         DispatchQueue.global(qos: .utility).async {
             let image = Self.extractAppIcon(fromIPA: path)
-            let versionID = Self.extractVersionID(fromIPA: path)
+            let metadata = Self.extractVersionMetadata(fromIPA: path)
             DispatchQueue.main.async {
                 if let image { versionIcons[path] = image }
-                if let versionID { downloadedVersionIDs[versionID] = ipaURL }
+                if let versionID = metadata.versionID {
+                    downloadedVersionIDs[downloadedFileKey(versionID, variant: metadata.variant)] = ipaURL
+                }
             }
         }
     }
 
-    private static func extractVersionID(fromIPA path: String) -> String? {
-        guard let data = runUnzip(["-p", path, "iTunesMetadata.plist"]),
+    private static func extractVersionMetadata(fromIPA path: String) -> (versionID: String?, variant: IPADownloadVariant) {
+        let metadataInfo = downloadedMetadata(fromIPA: path)
+        guard let data = metadataInfo.data,
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
-        else { return nil }
-        if let n = plist["softwareVersionExternalIdentifier"] as? NSNumber { return n.stringValue }
-        if let s = plist["softwareVersionExternalIdentifier"] as? String { return s }
-        return nil
+        else { return (nil, .original) }
+        let variant = IPADownloadVariant(removeAppStoreUpdateMetadata: metadataInfo.removesAppStoreUpdates)
+        if let n = plist["softwareVersionExternalIdentifier"] as? NSNumber { return (n.stringValue, variant) }
+        if let s = plist["softwareVersionExternalIdentifier"] as? String { return (s, variant) }
+        return (nil, variant)
     }
 
-    private func downloadedFileFor(_ record: VersionRecord) -> URL? {
-        downloadedFiles[record.version] ?? downloadedVersionIDs[record.versionId]
+    private func downloadedFileFor(_ record: VersionRecord, removesAppStoreUpdates: Bool) -> URL? {
+        let variant = IPADownloadVariant(removeAppStoreUpdateMetadata: removesAppStoreUpdates)
+        return downloadedFiles[downloadedFileKey(record.version, variant: variant)]
+            ?? downloadedVersionIDs[downloadedFileKey(record.versionId, variant: variant)]
     }
 
     private static func runUnzip(_ args: [String]) -> Data? {
@@ -3873,6 +3952,16 @@ struct ContentView: View {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
         return data.isEmpty ? nil : data
+    }
+
+    private static func downloadedMetadata(fromIPA path: String) -> (data: Data?, removesAppStoreUpdates: Bool) {
+        if let data = runUnzip(["-p", path, "iTunesMetadata.plist"]) {
+            return (data, false)
+        }
+        if let data = runUnzip(["-p", path, "PastelMetadata.plist"]) {
+            return (data, true)
+        }
+        return (nil, false)
     }
 
     private static func extractAppIcon(fromIPA path: String) -> NSImage? {
@@ -4013,16 +4102,18 @@ struct ContentView: View {
             return
         }
 
+        let removeUpdateMetadata = selectedVersion.map { noUpdateEnabled(for: $0) } ?? false
         let config = RunConfig(
             appleAccount: cleanAppleAccount,
             password: cleanPassword,
             code: cleanCode,
             appID: cleanAppID,
             versionID: cleanVersionID,
-            downloadDir: cleanDir
+            downloadDir: cleanDir,
+            removeAppStoreUpdateMetadata: removeUpdateMetadata
         )
-        let jobID = selectedVersion?.id ?? "manual-\(cleanAppID)-\(cleanVersionID)"
-        let label = "\(activeAppName) \(selectedVersion?.version ?? cleanVersionID)"
+        let jobID = selectedVersion.map { downloadJobID(for: $0, removesAppStoreUpdates: removeUpdateMetadata) } ?? "manual-\(cleanAppID)-\(cleanVersionID)"
+        let label = "\(activeAppName) \(selectedVersion?.version ?? cleanVersionID)\(removeUpdateMetadata ? " · 不再更新" : "")"
         downloads.start(id: jobID, label: label, config: config)
     }
 
@@ -4216,12 +4307,6 @@ private struct DownloadedAppSidebarRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(group.items.first?.dateText ?? "")
-                .font(.caption)
-                .foregroundStyle(isSelected ? Color.white.opacity(0.72) : Color.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.84)
-                .frame(width: 66, alignment: .trailing)
         }
         .padding(.horizontal, 10)
         .frame(height: 50)
@@ -4271,24 +4356,27 @@ private struct DownloadedAppSidebarRow: View {
 private struct DownloadedVersionHistoryRow: View {
     struct Columns {
         let version: CGFloat
+        let versionID: CGFloat
         let size: CGFloat
         let region: CGFloat
         let account: CGFloat
-        let date: CGFloat
+        let noUpdates: CGFloat
     }
 
     static let iconColumnWidth: CGFloat = 50
+    static let accountToNoUpdatesGap: CGFloat = 22
     static let actionGap: CGFloat = 12
     static let actionColumnWidth: CGFloat = 104
     static let rowHorizontalPadding: CGFloat = 16
 
     static func columns(for fullWidth: CGFloat) -> Columns {
-        let baseVersion: CGFloat = 126
-        let baseSize: CGFloat = 94
-        let baseRegion: CGFloat = 112
-        let baseAccount: CGFloat = 190
-        let baseDate: CGFloat = 104
-        let natural = baseVersion + baseSize + baseRegion + baseAccount + baseDate
+        let baseVersion: CGFloat = 94
+        let baseVersionID: CGFloat = 128
+        let baseSize: CGFloat = 88
+        let baseRegion: CGFloat = 86
+        let baseAccount: CGFloat = 184
+        let baseNoUpdates: CGFloat = 74
+        let natural = baseVersion + baseVersionID + baseSize + baseRegion + baseAccount + accountToNoUpdatesGap + baseNoUpdates
         let reserved = rowHorizontalPadding * 2 + iconColumnWidth + actionGap + actionColumnWidth
         let available = max(1, fullWidth - reserved)
 
@@ -4296,20 +4384,22 @@ private struct DownloadedVersionHistoryRow: View {
             let scale = available / natural
             return Columns(
                 version: baseVersion * scale,
+                versionID: baseVersionID * scale,
                 size: baseSize * scale,
                 region: baseRegion * scale,
                 account: baseAccount * scale,
-                date: baseDate * scale
+                noUpdates: baseNoUpdates * scale
             )
         }
 
         let extra = available - natural
         return Columns(
-            version: baseVersion + extra * 0.16,
+            version: baseVersion + extra * 0.12,
+            versionID: baseVersionID + extra * 0.20,
             size: baseSize + extra * 0.10,
-            region: baseRegion + extra * 0.14,
-            account: baseAccount + extra * 0.45,
-            date: baseDate + extra * 0.15
+            region: baseRegion + extra * 0.10,
+            account: baseAccount + extra * 0.36,
+            noUpdates: baseNoUpdates + extra * 0.10
         )
     }
 
@@ -4318,9 +4408,10 @@ private struct DownloadedVersionHistoryRow: View {
         let visualShift: CGFloat = 7
         return [
             start + columns.version - visualShift,
-            start + columns.version + columns.size - visualShift,
-            start + columns.version + columns.size + columns.region - visualShift,
-            start + columns.version + columns.size + columns.region + columns.account - visualShift
+            start + columns.version + columns.versionID - visualShift,
+            start + columns.version + columns.versionID + columns.size - visualShift,
+            start + columns.version + columns.versionID + columns.size + columns.region - visualShift,
+            start + columns.version + columns.versionID + columns.size + columns.region + columns.account + accountToNoUpdatesGap - visualShift
         ]
     }
 
@@ -4349,13 +4440,20 @@ private struct DownloadedVersionHistoryRow: View {
                     .lineLimit(1)
                     .frame(width: columns.version, alignment: .leading)
 
+                Text(item.versionId.isEmpty ? "—" : item.versionId)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(secondaryTextStyle)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+                    .frame(width: columns.versionID, alignment: .leading)
+
                 Text(item.sizeText)
                     .font(.callout)
                     .foregroundStyle(secondaryTextStyle)
                     .lineLimit(1)
                     .frame(width: columns.size, alignment: .leading)
 
-                Text("\(region.flag) \(region.name)")
+                Text(region.name)
                     .font(.callout)
                     .foregroundStyle(secondaryTextStyle)
                     .lineLimit(1)
@@ -4368,11 +4466,13 @@ private struct DownloadedVersionHistoryRow: View {
                     .truncationMode(.middle)
                     .frame(width: columns.account, alignment: .leading)
 
-                Text(item.dateText)
+                Color.clear.frame(width: Self.accountToNoUpdatesGap, height: 1)
+
+                Text(item.removesAppStoreUpdates ? String(localized: "是") : String(localized: "否"))
                     .font(.callout)
                     .foregroundStyle(secondaryTextStyle)
                     .lineLimit(1)
-                    .frame(width: columns.date, alignment: .leading)
+                    .frame(width: columns.noUpdates, alignment: .leading)
 
                 Color.clear.frame(width: Self.actionGap, height: 1)
 
@@ -4846,21 +4946,24 @@ struct VersionSelectionRow: View {
         let version: CGFloat
         let versionID: CGFloat
         let size: CGFloat
+        let noUpdates: CGFloat
     }
 
     static let iconColumnWidth: CGFloat = 50
     static let versionColumnWidth: CGFloat = 132
     static let versionIDColumnWidth: CGFloat = 178
     static let sizeColumnWidth: CGFloat = 118
+    static let noUpdatesColumnWidth: CGFloat = 88
     static let actionGap: CGFloat = 12
     static let actionColumnWidth: CGFloat = 96
     static let rowHorizontalPadding: CGFloat = 16
 
     static func columns(for fullWidth: CGFloat) -> Columns {
-        let baseVersion: CGFloat = 132
-        let baseVersionID: CGFloat = 210
-        let baseSize: CGFloat = 136
-        let natural = baseVersion + baseVersionID + baseSize
+        let baseVersion: CGFloat = 126
+        let baseVersionID: CGFloat = 196
+        let baseSize: CGFloat = 118
+        let baseNoUpdates: CGFloat = noUpdatesColumnWidth
+        let natural = baseVersion + baseVersionID + baseSize + baseNoUpdates
         let reserved = rowHorizontalPadding * 2 + iconColumnWidth + actionGap + actionColumnWidth
         let available = max(1, fullWidth - reserved)
 
@@ -4869,30 +4972,35 @@ struct VersionSelectionRow: View {
             return Columns(
                 version: baseVersion * scale,
                 versionID: baseVersionID * scale,
-                size: baseSize * scale
+                size: baseSize * scale,
+                noUpdates: baseNoUpdates * scale
             )
         }
 
         let extra = available - natural
         return Columns(
-            version: baseVersion + extra * 0.30,
-            versionID: baseVersionID + extra * 0.46,
-            size: baseSize + extra * 0.24
+            version: baseVersion + extra * 0.28,
+            versionID: baseVersionID + extra * 0.48,
+            size: baseSize + extra * 0.24,
+            noUpdates: baseNoUpdates
         )
     }
 
     static func visualDividerOffsets(for columns: Columns) -> [CGFloat] {
         let start = rowHorizontalPadding + iconColumnWidth
         let visualShift: CGFloat = 7
+        let noUpdatesDividerInset: CGFloat = 12
         return [
             start + columns.version - visualShift,
-            start + columns.version + columns.versionID - visualShift
+            start + columns.version + columns.versionID - visualShift,
+            start + columns.version + columns.versionID + columns.size + noUpdatesDividerInset
         ]
     }
 
     let record: VersionRecord
     let rowIndex: Int
     let isSelected: Bool
+    let removesAppStoreUpdates: Bool
     let isDownloading: Bool
     let downloadProgress: Double?
     let isPackaging: Bool
@@ -4901,6 +5009,7 @@ struct VersionSelectionRow: View {
     let downloadedURL: URL?
     let appIcon: NSImage?
     let onSelect: () -> Void
+    let onToggleNoUpdate: (Bool) -> Void
     let onDownload: () -> Void
     let onReveal: () -> Void
     let onAirDrop: () -> Void
@@ -4934,11 +5043,30 @@ struct VersionSelectionRow: View {
                     .foregroundStyle(secondaryTextStyle)
                     .lineLimit(1)
 
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Toggle("", isOn: Binding(
+                        get: { removesAppStoreUpdates },
+                        set: { enabled in
+                            withAnimation(.smooth(duration: 0.22)) {
+                                onSelect()
+                                onToggleNoUpdate(enabled)
+                            }
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .fixedSize()
+                    Spacer(minLength: 0)
+                }
+                .frame(width: columns.noUpdates, alignment: .center)
+                .help(String(localized: "下载后不再显示 App Store 更新"))
+
                 Color.clear
                     .frame(width: Self.actionGap, height: 1)
 
-                actionContent
-                    .frame(width: Self.actionColumnWidth, alignment: .trailing)
+                actionSlot
             }
             .padding(.horizontal, Self.rowHorizontalPadding)
             .frame(width: proxy.size.width, height: 46, alignment: .leading)
@@ -4970,14 +5098,26 @@ struct VersionSelectionRow: View {
     }
 
     @ViewBuilder
+    private var actionSlot: some View {
+        ZStack(alignment: .trailing) {
+            actionContent
+                .id(actionState)
+                .transition(actionTransition)
+        }
+        .frame(width: Self.actionColumnWidth, alignment: .trailing)
+        .animation(.smooth(duration: 0.22), value: actionState)
+    }
+
+    @ViewBuilder
     private var actionContent: some View {
-        if hasError {
+        switch actionState {
+        case .error:
             DownloadErrorIndicator(message: errorMessage, retry: onDownload)
-        } else if isDownloading {
+        case .running:
             DownloadProgressPill(progress: downloadProgress, isPackaging: isPackaging)
-        } else if downloadedURL != nil {
+        case .downloaded:
             FileActionsBar(isSelected: isSelected, onReveal: onReveal, onAirDrop: onAirDrop, onDelete: onDelete)
-        } else {
+        case .ready:
             Button {
                 onDownload()
             } label: {
@@ -5002,6 +5142,27 @@ struct VersionSelectionRow: View {
             .glassEffect(.regular.tint(isSelected ? Color.white.opacity(0.34) : nil).interactive(), in: Capsule())
             .help(String(localized: "下载此版本"))
         }
+    }
+
+    private enum ActionState: Hashable {
+        case error
+        case running
+        case downloaded
+        case ready
+    }
+
+    private var actionState: ActionState {
+        if hasError { return .error }
+        if isDownloading { return .running }
+        if downloadedURL != nil { return .downloaded }
+        return .ready
+    }
+
+    private var actionTransition: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.94, anchor: .trailing)),
+            removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .trailing))
+        )
     }
 
     private var rowFill: Color {
@@ -6120,7 +6281,7 @@ struct LanguageSettingsView: View {
 struct AboutSettingsView: View {
     @EnvironmentObject private var updateManager: AppUpdateManager
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "26.5.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "26.5.2"
     }
     private let thirdParty: [(String, String)] = [
         ("axios", "https://www.npmjs.com/package/axios"),

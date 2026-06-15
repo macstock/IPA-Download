@@ -7,9 +7,15 @@ import plist from 'plist';
 import {t} from './i18n.js';
 
 export class SignatureClient {
-    constructor(songInfo, email) {
+    constructor(songInfo, email, options = {}) {
         this.expectedMd5 = songInfo?.md5;
         this.metadata = {...songInfo.metadata, 'apple-id': email, userName: email, 'appleId': email, 'com.apple.iTunesStore.downloadInfo': {'accountInfo': {'AppleID': email}}};
+        this.includeAppStoreMetadata = options.includeAppStoreMetadata !== false;
+        this.pastelMetadata = {
+            ...this.metadata,
+            pastelMetadataVersion: 1,
+            pastelRemovesAppStoreUpdates: !this.includeAppStoreMetadata,
+        };
         this.signature = songInfo?.sinfs[0]?.sinf;
         if (!this.signature) {
             const e = new Error(t('sign_init_failed'));
@@ -66,10 +72,14 @@ export class SignatureClient {
             }
             const suppFileEntry = candidates.sort((a, b) => a.name.length - b.name.length)[0];
             const signatureTargetPath = suppFileEntry.name.replace(/\.supp$/i, '.sinf');
-            archive.append(Buffer.from(plist.build(this.metadata), 'utf8'), {name: 'iTunesMetadata.plist'});
+            if (this.includeAppStoreMetadata) {
+                archive.append(Buffer.from(plist.build(this.metadata), 'utf8'), {name: 'iTunesMetadata.plist'});
+            } else {
+                archive.append(Buffer.from(plist.build(this.pastelMetadata), 'utf8'), {name: 'PastelMetadata.plist'});
+            }
             archive.append(Buffer.from(this.signature, 'base64'), {name: signatureTargetPath});
             for (const entry of Object.values(entries)) {
-                if (entry.isDirectory || entry.name === 'iTunesMetadata.plist' || entry.name === signatureTargetPath) continue;
+                if (entry.isDirectory || entry.name === 'iTunesMetadata.plist' || entry.name === 'PastelMetadata.plist' || entry.name === signatureTargetPath) continue;
                 const stream = await readZip.stream(entry.name);
                 archive.append(stream, {name: entry.name});
             }

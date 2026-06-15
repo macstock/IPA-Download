@@ -111,7 +111,8 @@ export class Ipa {
         const name = s?.metadata?.bundleDisplayName || 'UnknownApp';
         const ver = s?.metadata?.bundleShortVersionString || 'UnknownVer';
         console.log(t('app_info', {name, ver}));
-        this.out = path.join(this.dir, `${name}_${ver}.ipa`);
+        const noUpdateSuffix = process.env.IPA_REMOVE_APP_STORE_UPDATE_METADATA === '1' ? '_no-update' : '';
+        this.out = path.join(this.dir, `${name}_${ver}${noUpdateSuffix}.ipa`);
         return s;
     }
 
@@ -174,7 +175,9 @@ export class Ipa {
             console.log(t('download_complete', {mb: (res.fileSize / 1024 / 1024).toFixed(2), parts: res.parts}));
             // 稳定的机器标记：进入「校验/签名/存档」阶段，供 App 显示「打包中」（与显示文案解耦，不随语言变化）。
             console.log('@@IPA:phase=packaging');
-            const signer = new SignatureClient(song, this.user.accountInfo.appleId);
+            const signer = new SignatureClient(song, this.user.accountInfo.appleId, {
+                includeAppStoreMetadata: process.env.IPA_REMOVE_APP_STORE_UPDATE_METADATA !== '1',
+            });
             await signer.sign(this.out);
 
             console.log(t('file_archived', {out: this.out}));

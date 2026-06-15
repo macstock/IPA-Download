@@ -1,16 +1,4 @@
-<?xml version="1.0" standalone="yes"?>
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
-    <channel>
-        <title>Pastel</title>
-        <item>
-            <title>26.5.2</title>
-            <pubDate>Mon, 15 Jun 2026 16:19:01 +0800</pubDate>
-            <link>https://github.com/EEliberto/IPA-Download/releases/tag/Pastel3</link>
-            <sparkle:version>3</sparkle:version>
-            <sparkle:shortVersionString>26.5.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[## 简体中文
+## 简体中文
 
 感谢你使用 Pastel！
 
@@ -107,8 +95,3 @@ Pastel 사용 중 문제가 있으면 GitHub에 Issue를 제출해 주세요.
 3. แก้ไขปัญหาที่ทราบบางรายการ
 
 หากพบปัญหาระหว่างใช้งาน Pastel โปรดส่ง Issue บน GitHub
-]]></description>
-            <enclosure url="https://github.com/EEliberto/IPA-Download/releases/download/Pastel3/Pastel-26.5.2-build-3.dmg" length="37806080" type="application/octet-stream" sparkle:edSignature="lTZQM5+pYXEoTVGFe23MgE57GIWO5jZDRawOXTPOsTTJ5x2S0JxtzoIbtLl6RwDPfBQOcR1hjTwTd6dRXmDmDg=="/>
-        </item>
-    </channel>
-</rss>
