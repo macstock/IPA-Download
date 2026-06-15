@@ -37,9 +37,9 @@
 # 鸣谢。
 本项目参考了来自 ipatools 的部份代码和原理 https://github.com/beer-psi/ipatool.ts
 
-登陆流程依赖 SideStore 的 GSA。
+登陆流程依赖 SideStore 的 GSA。Device (设备) GUID 逻辑参考 https://github.com/Lakr233/Asspp
 
-多语言翻译依赖 Claude。
+多语言翻译依赖 Claude
 
 # 源码构建。
 首次克隆后，请先安装 Node 依赖：
