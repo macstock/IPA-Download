@@ -45,6 +45,8 @@ function normalizeApp(item, source = 'apple') {
         artworkUrl: asText(item.artworkUrl100 || item.artworkUrl60 || item.artworkUrl512),
         trackViewUrl: asText(item.trackViewUrl),
         currentVersionReleaseDate: asText(item.currentVersionReleaseDate || item.releaseDate),
+        description: asText(item.description),
+        releaseNotes: asText(item.releaseNotes),
         source,
     };
 }
@@ -62,6 +64,8 @@ function normalizeRSSApp(item, source = 'apple-rss') {
         artworkUrl: asText(item.artworkUrl100),
         trackViewUrl: asText(item.url),
         currentVersionReleaseDate: asText(item.releaseDate),
+        description: '',
+        releaseNotes: '',
         source,
     };
 }
@@ -84,6 +88,8 @@ function normalizeLegacyRSSApp(item, source = 'apple-rss') {
         artworkUrl: asText(largestImage?.label),
         trackViewUrl: link,
         currentVersionReleaseDate: asText(item?.['im:releaseDate']?.label),
+        description: asText(item?.summary?.label),
+        releaseNotes: '',
         source,
     };
 }

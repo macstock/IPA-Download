@@ -1116,6 +1116,8 @@ struct AppSearchResult: Decodable, Identifiable, Hashable {
     let artworkUrl: String
     let trackViewUrl: String
     let currentVersionReleaseDate: String
+    let description: String?
+    let releaseNotes: String?
     let source: String
 
     var fileSizeText: String {
@@ -1148,6 +1150,24 @@ struct VersionsResponse: Decodable {
     let versions: [VersionRecord]
     let errors: [String]
 }
+
+struct IPAInspectionResult {
+    let bundleId: String
+    let minimumOSVersion: String
+    let deviceFamily: [Int]
+    let platformVersion: String
+    let teamName: String
+    let teamIdentifier: String
+    let creationDate: Date?
+    let expirationDate: Date?
+    let entitlements: [String: Any]
+    
+    var deviceFamilyString: String {
+        let mapping: [Int: String] = [1: "iPhone", 2: "iPad", 3: "Apple TV", 4: "Apple Watch", 6: "Mac"]
+        return deviceFamily.compactMap { mapping[$0] }.joined(separator: ", ")
+    }
+}
+
 
 struct DownloadedItem: Identifiable, Hashable {
     let id: String
@@ -1578,6 +1598,7 @@ struct ContentView: View {
     @State private var manualAppID = ""
     @State private var manualVersionID = ""
     @State private var manualNoUpdate = false
+    @State private var inspectingItem: DownloadedItem?
     @State private var storefrontReloadTask: Task<Void, Never>?
     @Environment(\.colorScheme) private var colorScheme
     @FocusState private var activeField: ActiveField?
@@ -1686,6 +1707,9 @@ struct ContentView: View {
             }
         } message: {
             Text(String(localized: "验证码已发送至你的受信任 Apple 设备。输入后将完成双重认证并继续。"))
+        }
+        .sheet(item: $inspectingItem) { item in
+            IPAInspectorView(item: item)
         }
     }
 
@@ -2261,6 +2285,7 @@ struct ContentView: View {
                                     let downloadedURL = downloadedFileFor(record, removesAppStoreUpdates: removesUpdates)
                                     VersionSelectionRow(
                                         record: record,
+                                        appDetails: catalog.selectedSearchResult,
                                         rowIndex: index,
                                         isSelected: false,
                                         removesAppStoreUpdates: removesUpdates,
@@ -2428,6 +2453,7 @@ struct ContentView: View {
         case .downloaded:
             FileActionsBar(
                 isSelected: false,
+                onInspect: nil,
                 onReveal: {
                     if let url = manualDownloadedURL { revealInFinder(url) }
                 },
@@ -2795,6 +2821,7 @@ struct ContentView: View {
                                 let downloadedURL = downloadedFileFor(record, removesAppStoreUpdates: removesUpdates)
                                 VersionSelectionRow(
                                     record: record,
+                                    appDetails: catalog.selectedSearchResult,
                                     rowIndex: index,
                                     isSelected: false,
                                     removesAppStoreUpdates: removesUpdates,
@@ -2985,10 +3012,23 @@ struct ContentView: View {
                                 rowIndex: index,
                                 isSelected: false,
                                 onSelect: {},
+                                onInspect: { inspectingItem = item },
                                 onReveal: { revealInFinder(item.fileURL) },
                                 onAirDrop: { airDrop(item.fileURL) },
                                 onDelete: { deleteDownloaded(item.fileURL) }
                             )
+                            .contextMenu {
+                                Button(String(localized: "分析 IPA 内容")) {
+                                    inspectingItem = item
+                                }
+                                Divider()
+                                Button(String(localized: "在访达中显示")) {
+                                    revealInFinder(item.fileURL)
+                                }
+                                Button(String(localized: "删除本地文件"), role: .destructive) {
+                                    deleteDownloaded(item.fileURL)
+                                }
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3287,6 +3327,7 @@ struct ContentView: View {
             Spacer(minLength: 8)
             FileActionsBar(
                 isSelected: false,
+                onInspect: { inspectingItem = item },
                 onReveal: { revealInFinder(item.fileURL) },
                 onAirDrop: { airDrop(item.fileURL) },
                 onDelete: { deleteDownloaded(item.fileURL) }
@@ -3294,6 +3335,18 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .contextMenu {
+            Button(String(localized: "分析 IPA 内容")) {
+                inspectingItem = item
+            }
+            Divider()
+            Button(String(localized: "在访达中显示")) {
+                revealInFinder(item.fileURL)
+            }
+            Button(String(localized: "删除本地文件"), role: .destructive) {
+                deleteDownloaded(item.fileURL)
+            }
+        }
     }
 
     private func downloadedAppIcon(path: String, size: CGFloat) -> some View {
@@ -3658,7 +3711,7 @@ struct ContentView: View {
         GeometryReader { proxy in
             let columns = VersionSelectionRow.columns(for: proxy.size.width)
 
-            ZStack(alignment: .leading) {
+            ZStack(alignment: . leading) {
                 HStack(spacing: 0) {
                     Color.clear
                         .frame(width: VersionSelectionRow.iconColumnWidth, height: 1)
@@ -3720,13 +3773,32 @@ struct ContentView: View {
 
     private var versionListStatusBar: some View {
         HStack {
+            Button {
+                downloadAllVersions()
+            } label: {
+                Label(String(localized: "全部下载"), systemImage: "arrow.down.circle")
+                    .font(.caption.weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(catalog.versionResults.isEmpty || allVersionsDownloaded ? .tertiary : .secondary)
+            .disabled(catalog.versionResults.isEmpty || allVersionsDownloaded)
+            .help(String(localized: "下载所有未下载的历史版本"))
+
             Spacer()
+
             Text(String(localized: "搜索到 \(catalog.versionResults.count) 个版本，来源 \(versionResultSourceSummary)"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+
             Spacer()
+
+            // 占位保持文字居中
+            Label(String(localized: "全部下载"), systemImage: "arrow.down.circle")
+                .font(.caption.weight(.medium))
+                .hidden()
         }
+        .padding(.horizontal, 12)
         .frame(height: 30)
     }
 
@@ -3952,6 +4024,26 @@ struct ContentView: View {
     private func downloadVersion(_ record: VersionRecord) {
         selectVersion(record)
         start()
+    }
+
+    private var allVersionsDownloaded: Bool {
+        !catalog.versionResults.isEmpty && catalog.versionResults.allSatisfy { record in
+            let removesUpdates = noUpdateEnabled(for: record)
+            return downloadedFileFor(record, removesAppStoreUpdates: removesUpdates) != nil
+        }
+    }
+
+    private func downloadAllVersions() {
+        let versions = catalog.versionResults.filter { record in
+            let removesUpdates = noUpdateEnabled(for: record)
+            let jobID = downloadJobID(for: record, removesAppStoreUpdates: removesUpdates)
+            return downloadedFileFor(record, removesAppStoreUpdates: removesUpdates) == nil
+                && !downloads.isRunning(jobID)
+        }
+        guard !versions.isEmpty else { return }
+        for record in versions {
+            downloadVersion(record)
+        }
     }
 
     private static let versionIDsFetchJobKey = "__ipa_versionids_fetch__"
@@ -4274,6 +4366,93 @@ struct ContentView: View {
         return NSImage(data: pngData)
     }
 
+    static func inspectIPA(from path: String) -> IPAInspectionResult? {
+        guard let listData = runUnzip(["-Z1", path]),
+              let list = String(data: listData, encoding: .utf8) else { return nil }
+        let entries = list.split(separator: "\n").map(String.init)
+        
+        let infoPlistPath = entries.first { $0.range(of: #"^Payload/[^/]+\.app/Info\.plist$"#, options: [.regularExpression, .caseInsensitive]) != nil }
+        let provisionPath = entries.first { $0.range(of: #"^Payload/[^/]+\.app/embedded\.mobileprovision$"#, options: [.regularExpression, .caseInsensitive]) != nil }
+        
+        guard let infoPlistPath, let infoData = runUnzip(["-p", path, infoPlistPath]),
+              let infoPlist = try? PropertyListSerialization.propertyList(from: infoData, options: [], format: nil) as? [String: Any]
+        else { return nil }
+        
+        let bundleId = infoPlist["CFBundleIdentifier"] as? String ?? ""
+        let minOS = infoPlist["MinimumOSVersion"] as? String ?? ""
+        let deviceFamily = infoPlist["UIDeviceFamily"] as? [Int] ?? []
+        let platformVersion = infoPlist["DTPlatformVersion"] as? String ?? ""
+        
+        var teamName = ""
+        var teamIdentifier = ""
+        var creationDate: Date? = nil
+        var expirationDate: Date? = nil
+        var entitlements: [String: Any] = [:]
+        
+        if let provisionPath, let provData = runUnzip(["-p", path, provisionPath]),
+           let provString = String(data: provData, encoding: .ascii) {
+            
+            if let startRange = provString.range(of: "<?xml"),
+               let endRange = provString.range(of: "</plist>") {
+                let xmlString = provString[startRange.lowerBound..<endRange.upperBound]
+                if let xmlData = xmlString.data(using: .utf8),
+                   let provPlist = try? PropertyListSerialization.propertyList(from: xmlData, options: [], format: nil) as? [String: Any] {
+                    teamName = provPlist["TeamName"] as? String ?? ""
+                    let teamIdentifiers = provPlist["TeamIdentifier"] as? [String] ?? []
+                    teamIdentifier = teamIdentifiers.first ?? ""
+                    creationDate = provPlist["CreationDate"] as? Date
+                    expirationDate = provPlist["ExpirationDate"] as? Date
+                    entitlements = provPlist["Entitlements"] as? [String: Any] ?? [:]
+                }
+            }
+        } else if let execName = infoPlist["CFBundleExecutable"] as? String,
+                  let execPath = entries.first(where: { $0.range(of: #"^Payload/[^/]+\.app/\#(execName)$"#, options: [.regularExpression, .caseInsensitive]) != nil }) {
+            // App Store fallback: extract entitlements from binary using codesign
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            if let execData = runUnzip(["-p", path, execPath]) {
+                try? execData.write(to: tempURL)
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+                process.arguments = ["-d", "--entitlements", ":-", tempURL.path]
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                try? process.run()
+                process.waitUntilExit()
+                
+                let outData = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let xmlString = String(data: outData, encoding: .utf8),
+                   let startRange = xmlString.range(of: "<?xml"),
+                   let endRange = xmlString.range(of: "</plist>") {
+                    let plistStr = String(xmlString[startRange.lowerBound..<endRange.upperBound])
+                    if let plistData = plistStr.data(using: .utf8),
+                       let dict = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] {
+                        entitlements = dict
+                        teamName = "App Store (FairPlay 加密)"
+                        if let appID = dict["application-identifier"] as? String,
+                           let dotIndex = appID.firstIndex(of: ".") {
+                            teamIdentifier = String(appID[..<dotIndex])
+                        } else {
+                            teamIdentifier = "Apple 分发"
+                        }
+                    }
+                }
+                try? FileManager.default.removeItem(at: tempURL)
+            }
+        }
+        
+        return IPAInspectionResult(
+            bundleId: bundleId,
+            minimumOSVersion: minOS,
+            deviceFamily: deviceFamily,
+            platformVersion: platformVersion,
+            teamName: teamName,
+            teamIdentifier: teamIdentifier,
+            creationDate: creationDate,
+            expirationDate: expirationDate,
+            entitlements: entitlements
+        )
+    }
+
     private func revealInFinder(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
@@ -4337,6 +4516,8 @@ struct ContentView: View {
             artworkUrl: "",
             trackViewUrl: "",
             currentVersionReleaseDate: "",
+            description: nil,
+            releaseNotes: nil,
             source: "downloaded"
         )
     }
@@ -4732,6 +4913,7 @@ private struct DownloadedVersionHistoryRow: View {
     let rowIndex: Int
     let isSelected: Bool
     let onSelect: () -> Void
+    let onInspect: () -> Void
     let onReveal: () -> Void
     let onAirDrop: () -> Void
     let onDelete: () -> Void
@@ -4788,7 +4970,7 @@ private struct DownloadedVersionHistoryRow: View {
 
                 Color.clear.frame(width: Self.actionGap, height: 1)
 
-                FileActionsBar(isSelected: isSelected, onReveal: onReveal, onAirDrop: onAirDrop, onDelete: onDelete)
+                FileActionsBar(isSelected: isSelected, onInspect: onInspect, onReveal: onReveal, onAirDrop: onAirDrop, onDelete: onDelete)
                     .frame(width: Self.actionColumnWidth, alignment: .trailing)
             }
             .padding(.horizontal, Self.rowHorizontalPadding)
@@ -5324,6 +5506,7 @@ struct VersionSelectionRow: View {
     }
 
     let record: VersionRecord
+    let appDetails: AppSearchResult?
     let rowIndex: Int
     let isSelected: Bool
     let removesAppStoreUpdates: Bool
@@ -5341,6 +5524,7 @@ struct VersionSelectionRow: View {
     let onAirDrop: () -> Void
     let onDelete: () -> Void
     @State private var isHovered = false
+    @State private var showingDetails = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -5350,11 +5534,62 @@ struct VersionSelectionRow: View {
             HStack(spacing: 0) {
                 rowIcon
 
-                Text(record.version)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(primaryTextStyle)
-                    .lineLimit(1)
-                    .frame(width: columns.version, alignment: .leading)
+                Button(action: {
+                    showingDetails.toggle()
+                }) {
+                    Text(record.version)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(primaryTextStyle)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .frame(width: columns.version, alignment: .leading)
+                .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(String(localized: "版本详情"))
+                                .font(.headline)
+                            Text("\(String(localized: "版本号："))\(record.version)")
+                                .font(.subheadline)
+                            Text("\(String(localized: "版本 ID："))\(record.versionId)")
+                                .font(.subheadline)
+                                .textSelection(.enabled)
+                            Text("\(String(localized: "发布时间："))\(record.date.isEmpty ? String(localized: "未知") : record.date)")
+                                .font(.subheadline)
+                            Text("\(String(localized: "数据来源："))\(record.source)")
+                                .font(.subheadline)
+                        }
+
+                        if let appDetails {
+                            if let notes = appDetails.releaseNotes, !notes.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(String(localized: "最新发布说明"))
+                                        .font(.headline)
+                                    ScrollView {
+                                        Text(notes)
+                                            .font(.footnote)
+                                            .textSelection(.enabled)
+                                    }
+                                    .frame(maxHeight: 160)
+                                }
+                            } else if let desc = appDetails.description, !desc.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(String(localized: "App Store 介绍"))
+                                        .font(.headline)
+                                    ScrollView {
+                                        Text(desc)
+                                            .font(.footnote)
+                                            .textSelection(.enabled)
+                                    }
+                                    .frame(maxHeight: 160)
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                    .frame(width: 320)
+                }
 
                 Text(record.versionId)
                     .font(.callout.monospacedDigit())
@@ -5438,7 +5673,7 @@ struct VersionSelectionRow: View {
         case .running:
             DownloadProgressPill(progress: downloadProgress, isPackaging: isPackaging)
         case .downloaded:
-            FileActionsBar(isSelected: isSelected, onReveal: onReveal, onAirDrop: onAirDrop, onDelete: onDelete)
+            FileActionsBar(isSelected: isSelected, onInspect: nil, onReveal: onReveal, onAirDrop: onAirDrop, onDelete: onDelete)
         case .ready:
             Button {
                 onDownload()
@@ -5584,12 +5819,16 @@ private struct RowActionButton<Content: View>: View {
 
 private struct FileActionsBar: View {
     let isSelected: Bool
+    var onInspect: (() -> Void)? = nil
     let onReveal: () -> Void
     let onAirDrop: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
+            if let onInspect = onInspect {
+                FileActionButton(systemImage: "magnifyingglass", tint: .secondary, size: 14.5, help: String(localized: "分析 IPA 内容"), action: onInspect)
+            }
             FileActionButton(systemImage: "finder", tint: .secondary, size: 14.5, help: String(localized: "在访达中显示"), action: onReveal)
             FileActionButton(systemImage: "square.and.arrow.up", tint: Color.accentColor, size: 13, yOffset: -1, help: String(localized: "通过 AirDrop 发送"), action: onAirDrop)
             FileActionButton(systemImage: "trash", tint: .red, size: 13.5, help: String(localized: "删除本地文件"), action: onDelete)
@@ -6880,6 +7119,119 @@ private struct CheckForUpdatesSettingsRow: View {
                           systemImage: "arrow.clockwise",
                           isEnabled: viewModel.canCheckForUpdates) {
             updater.checkForUpdates()
+        }
+    }
+}
+
+struct IPAInspectorView: View {
+    let item: DownloadedItem
+    @Environment(\.dismiss) private var dismiss
+    @State private var result: IPAInspectionResult?
+    @State private var isParsing = true
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(String(localized: "IPA 深度分析"))
+                    .font(.headline)
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.title2)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding()
+            .background(Color(nsColor: .windowBackgroundColor))
+            
+            Divider()
+            
+            if isParsing {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text(String(localized: "正在提取应用信息和签名证书..."))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let result = result {
+                Form {
+                    Section(header: Text(String(localized: "应用基础配置")).font(.headline).padding(.top, 8)) {
+                        LabeledContent(String(localized: "应用名称"), value: item.appName)
+                        LabeledContent("Bundle ID", value: result.bundleId)
+                        LabeledContent(String(localized: "应用版本"), value: item.version)
+                        LabeledContent(String(localized: "最低 iOS 版本"), value: result.minimumOSVersion.isEmpty ? "—" : result.minimumOSVersion)
+                        LabeledContent(String(localized: "支持设备"), value: result.deviceFamilyString.isEmpty ? "—" : result.deviceFamilyString)
+                        LabeledContent(String(localized: "平台版本"), value: result.platformVersion.isEmpty ? "—" : result.platformVersion)
+                    }
+                    
+                    Section(header: Text(String(localized: "签名与开发者信息")).font(.headline).padding(.top, 16)) {
+                        LabeledContent(String(localized: "开发团队 (Team Name)"), value: result.teamName.isEmpty ? "—" : result.teamName)
+                        LabeledContent(String(localized: "团队 ID (Team ID)"), value: result.teamIdentifier.isEmpty ? "—" : result.teamIdentifier)
+                        
+                        if let cDate = result.creationDate {
+                            LabeledContent(String(localized: "签发时间"), value: cDate.formatted())
+                        }
+                        if let eDate = result.expirationDate {
+                            LabeledContent(String(localized: "过期时间"), value: eDate.formatted())
+                        }
+                    }
+                    
+                    Section(header: Text(String(localized: "应用权限声明 (Entitlements)")).font(.headline).padding(.top, 16)) {
+                        if result.entitlements.isEmpty {
+                            Text(String(localized: "未找到权限声明或该应用未声明特殊权限。"))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(result.entitlements.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                                HStack(alignment: .top) {
+                                    Text(key)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    if let array = value as? [Any] {
+                                        VStack(alignment: .trailing, spacing: 4) {
+                                            ForEach(Array(array.enumerated()), id: \.offset) { _, item in
+                                                Text(String(describing: item))
+                                                    .font(.caption.monospaced())
+                                                    .multilineTextAlignment(.trailing)
+                                            }
+                                        }
+                                    } else {
+                                        Text(String(describing: value))
+                                            .font(.caption.monospaced())
+                                            .multilineTextAlignment(.trailing)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+                .scrollDisabled(false)
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.orange)
+                    Text(String(localized: "分析失败，可能该包已被破坏或不支持解析。"))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(width: 540, height: 600)
+        .task {
+            // Run inspection in background
+            let url = item.fileURL
+            let inspectResult = await Task.detached(priority: .userInitiated) {
+                ContentView.inspectIPA(from: url.path)
+            }.value
+            
+            await MainActor.run {
+                self.result = inspectResult
+                self.isParsing = false
+            }
         }
     }
 }
