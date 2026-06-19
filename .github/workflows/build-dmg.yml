@@ -40,7 +40,7 @@ jobs:
     - name: Create DMG
       run: |
         # Find the built .app
-        APP_PATH=$(find build/Build/Products/Release -name "*.app" | head -1)
+        APP_PATH=$(find build/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
         if [ -z "$APP_PATH" ]; then
           echo "Error: App not found in build directory"
           exit 1
