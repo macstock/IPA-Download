@@ -1,0 +1,71 @@
+name: Build and Package DMG
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+
+    - name: Resolve Package Dependencies
+      run: xcodebuild -resolvePackageDependencies -project Pastel.xcodeproj
+
+    - name: Build App
+      run: |
+        xcodebuild clean build \
+          -project Pastel.xcodeproj \
+          -scheme Pastel \
+          -configuration Release \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          -derivedDataPath build/
+
+    - name: Install create-dmg
+      run: brew install create-dmg
+
+    - name: Create DMG
+      run: |
+        # Find the built .app
+        APP_PATH=$(find build/Build/Products/Release -name "*.app" | head -1)
+        if [ -z "$APP_PATH" ]; then
+          echo "Error: App not found in build directory"
+          exit 1
+        fi
+        
+        APP_NAME=$(basename "$APP_PATH")
+        DMG_NAME="${APP_NAME%.*}.dmg"
+        
+        # Ad-hoc sign the app deeply to avoid create-dmg failing on unsigned binaries
+        codesign --force --deep --sign - "$APP_PATH" || true
+        
+        # Create DMG
+        create-dmg \
+          --volname "${APP_NAME%.*}" \
+          --window-pos 200 120 \
+          --window-size 600 400 \
+          --icon-size 100 \
+          --icon "$APP_NAME" 175 190 \
+          --hide-extension "$APP_NAME" \
+          --app-drop-link 425 190 \
+          "$DMG_NAME" \
+          "$APP_PATH"
+
+    - name: Upload DMG Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Pastel-macOS-App
+        path: "*.dmg"
